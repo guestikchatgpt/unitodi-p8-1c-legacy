@@ -15,14 +15,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare v0.5.2 compatibility source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\scripts\prepare-v052.ps1
+
       - name: Build x86 .NET Framework driver
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
           if (-not (Test-Path $csc)) { throw "csc.exe not found: $csc" }
-          New-Item -ItemType Directory -Force build | Out-Null
-          & $csc /nologo /target:library /platform:x86 /optimize+ /codepage:65001 /out:build\UnitodiP8LegacyDriver.dll src\UnitodiP8LegacyDriver-fixed.cs
+          & $csc /nologo /target:library /platform:x86 /optimize+ /codepage:65001 /out:build\UnitodiP8LegacyDriver.dll build\UnitodiP8LegacyDriver-v052.cs
           if ($LASTEXITCODE -ne 0) { throw "csc failed: $LASTEXITCODE" }
 
       - name: Run source-level smoke tests
@@ -30,7 +35,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
-          & $csc /nologo /target:exe /platform:x86 /codepage:65001 /reference:build\UnitodiP8LegacyDriver.dll /out:build\SmokeTest.exe tests\SmokeTest.cs
+          & $csc /nologo /target:exe /platform:x86 /codepage:65001 /reference:build\UnitodiP8LegacyDriver.dll /out:build\SmokeTest.exe build\SmokeTest-v052.cs
           if ($LASTEXITCODE -ne 0) { throw "smoke test compile failed: $LASTEXITCODE" }
           & .\build\SmokeTest.exe
           if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
