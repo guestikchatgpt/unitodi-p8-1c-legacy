@@ -138,12 +138,12 @@ namespace UnitodiP8Legacy
                 switch (methodNum)
                 {
                     case 0:
-                        retValue = "0.5.0-payment-return-test";
+                        retValue = "0.5.1-payment-return-test";
                         return;
                     case 1:
                         EnsureLength(p, 7);
                         p[0] = "Unitodi P8 Bio via PBF/POSConnector";
-                        p[1] = "Legacy BPO 2.x driver. Device test, payment and return are enabled; other monetary operations remain blocked.";
+                        p[1] = "Legacy BPO 2.x driver. Device test, payment and return are enabled. PBF host success codes 0 and 00 are accepted.";
                         p[2] = "ЭквайринговыйТерминал";
                         p[3] = 2002;
                         p[4] = true;
@@ -200,7 +200,7 @@ namespace UnitodiP8Legacy
                         retValue = printSlipOnTerminal;
                         return;
                     default:
-                        SetError(12000, "This monetary operation is not enabled in build 0.5.0-payment-return-test.");
+                        SetError(12000, "This monetary operation is not enabled in build 0.5.1-payment-return-test.");
                         retValue = false;
                         return;
                 }
@@ -235,8 +235,12 @@ namespace UnitodiP8Legacy
             }
             if (String.Equals(name, "PrintSlipOnTerminal", StringComparison.OrdinalIgnoreCase))
             {
-                string s = ToText(value).Trim();
-                printSlipOnTerminal = s == "1" || s.Equals("true", StringComparison.OrdinalIgnoreCase) || s.Equals("да", StringComparison.OrdinalIgnoreCase);
+                try { printSlipOnTerminal = Convert.ToBoolean(value, CultureInfo.InvariantCulture); }
+                catch
+                {
+                    string s = ToText(value).Trim();
+                    printSlipOnTerminal = s == "1" || s.Equals("true", StringComparison.OrdinalIgnoreCase) || s.Equals("да", StringComparison.OrdinalIgnoreCase);
+                }
                 SetOk();
                 return true;
             }
@@ -382,12 +386,13 @@ namespace UnitodiP8Legacy
                     ComSet(req, "CurrencyCode", "643");
                 }
 
-                if (!String.IsNullOrWhiteSpace(originalRrn)) ComSet(req, "ReferenceNumber", originalRrn);
+                if (!String.IsNullOrWhiteSpace(originalRrn))
+                    ComSet(req, "ReferenceNumber", originalRrn);
 
                 int rc = ToInt(ComCall(pc, "Exchange", req, rsp, timeoutMs));
                 result.ExchangeCode = rc;
                 result.Status = SafeGetInt(rsp, "Status");
-                result.ResponseCode = SafeGetString(rsp, "ResponseCodeHost");
+                result.ResponseCode = SafeGetString(rsp, "ResponseCodeHost").Trim();
                 result.Message = SafeGetString(rsp, "TextResponse");
                 result.Rrn = SafeGetString(rsp, "ReferenceNumber");
                 result.AuthorizationCode = SafeGetString(rsp, "AuthorizationCode");
@@ -398,7 +403,7 @@ namespace UnitodiP8Legacy
 
                 int connectorErrorCode = SafeGetInt(pc, "ErrorCode");
                 string connectorError = SafeGetString(pc, "ErrorDescription");
-                bool hostOk = result.ResponseCode.Length == 0 || result.ResponseCode == "00";
+                bool hostOk = IsHostSuccess(result.ResponseCode);
                 bool statusOk = result.Status == 1 || result.Status == Int32.MinValue;
                 bool responseOk = rc == 0 && hostOk && statusOk;
 
@@ -434,6 +439,13 @@ namespace UnitodiP8Legacy
                 ReleaseCom(req);
                 ReleaseCom(pc);
             }
+        }
+
+        private static bool IsHostSuccess(string code)
+        {
+            if (String.IsNullOrWhiteSpace(code)) return true;
+            code = code.Trim();
+            return code == "0" || code == "00";
         }
 
         private static bool IsPosConnectorAvailable()
@@ -504,17 +516,8 @@ namespace UnitodiP8Legacy
             catch { }
         }
 
-        private void SetOk()
-        {
-            lastErrorCode = 0;
-            lastErrorDescription = "OK";
-        }
-
-        private void SetError(int code, string description)
-        {
-            lastErrorCode = code;
-            lastErrorDescription = description ?? "Error";
-        }
+        private void SetOk() { lastErrorCode = 0; lastErrorDescription = "OK"; }
+        private void SetError(int code, string description) { lastErrorCode = code; lastErrorDescription = description ?? "Error"; }
 
         private sealed class ExchangeResult
         {
