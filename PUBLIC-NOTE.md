@@ -1,0 +1,1 @@
+This repository is public. Terminal identifiers and merchant-specific values must not be committed; configure them locally on the cashier workstation.
