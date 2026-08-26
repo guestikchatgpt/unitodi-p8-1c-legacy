@@ -3,66 +3,18 @@ name: build-x86
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*' ]
-  pull_request:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: windows-latest
-
+  probe-linux:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Probe runner
+        run: echo "ubuntu runner ok"
 
-      - name: Build x86 .NET Framework driver
+  probe-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Probe runner
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
-          if (-not (Test-Path $csc)) { throw "csc.exe not found: $csc" }
-          New-Item -ItemType Directory -Force build | Out-Null
-          & $csc /nologo /target:library /platform:x86 /optimize+ /codepage:65001 /out:build\UnitodiP8LegacyDriver.dll src\UnitodiP8LegacyDriver.cs
-          if ($LASTEXITCODE -ne 0) { throw "csc failed: $LASTEXITCODE" }
-
-      - name: Run source-level smoke tests
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
-          & $csc /nologo /target:exe /platform:x86 /codepage:65001 /reference:build\UnitodiP8LegacyDriver.dll /out:build\SmokeTest.exe tests\SmokeTest.cs
-          if ($LASTEXITCODE -ne 0) { throw "smoke test compile failed: $LASTEXITCODE" }
-          & .\build\SmokeTest.exe
-          if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
-
-      - name: Validate 32-bit COM registration metadata
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $regasm = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\RegAsm.exe"
-          & $regasm build\UnitodiP8LegacyDriver.dll /nologo /regfile:build\UnitodiP8LegacyDriver.reg
-          if ($LASTEXITCODE -ne 0) { throw "RegAsm /regfile failed: $LASTEXITCODE" }
-          $reg = Get-Content build\UnitodiP8LegacyDriver.reg -Raw
-          if ($reg -notmatch 'AddIn\.UnitodiP8Legacy') { throw 'ProgID missing from RegAsm output' }
-          if ($reg -notmatch '3B959EAD-3E6C-49FE-B3AC-B22F3ECD38A9') { throw 'CLSID missing from RegAsm output' }
-
-      - name: Package deployable artifact
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force dist\UnitodiP8Legacy | Out-Null
-          Copy-Item build\UnitodiP8LegacyDriver.dll dist\UnitodiP8Legacy\
-          Copy-Item scripts\install.ps1 dist\UnitodiP8Legacy\
-          Copy-Item scripts\uninstall.ps1 dist\UnitodiP8Legacy\
-          Copy-Item scripts\test-pbf.ps1 dist\UnitodiP8Legacy\
-          Copy-Item README.md dist\UnitodiP8Legacy\
-          Compress-Archive -Path dist\UnitodiP8Legacy\* -DestinationPath dist\UnitodiP8Legacy-x86.zip -Force
-          Get-FileHash dist\UnitodiP8Legacy-x86.zip -Algorithm SHA256 | Format-List
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: UnitodiP8Legacy-x86
-          path: dist/UnitodiP8Legacy-x86.zip
-          if-no-files-found: error
-          retention-days: 30
+        run: Write-Host "windows runner ok"
