@@ -2,7 +2,7 @@ name: build-x86
 
 on:
   push:
-    branches: [ main, 'feature/**' ]
+    branches: [ main, 'feature/**', 'fix/**' ]
     tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
           if (-not (Test-Path $csc)) { throw "csc.exe not found: $csc" }
           New-Item -ItemType Directory -Force build | Out-Null
-          & $csc /nologo /target:library /platform:x86 /optimize+ /codepage:65001 /out:build\UnitodiP8LegacyDriver.dll src\UnitodiP8LegacyDriver.cs
+          & $csc /nologo /target:library /platform:x86 /optimize+ /codepage:65001 /out:build\UnitodiP8LegacyDriver.dll src\UnitodiP8LegacyDriver-fixed.cs
           if ($LASTEXITCODE -ne 0) { throw "csc failed: $LASTEXITCODE" }
 
       - name: Run source-level smoke tests
