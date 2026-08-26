@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare v0.5.2 compatibility source
+      - name: Prepare v0.5.3 UTF-8 compatibility source
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
