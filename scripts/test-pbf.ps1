@@ -1,5 +1,6 @@
 param(
-    [string]$TerminalID = '94678638',
+    [Parameter(Mandatory=$true)]
+    [string]$TerminalID,
     [int]$TimeoutMs = 15000
 )
 $ErrorActionPreference = 'Stop'
