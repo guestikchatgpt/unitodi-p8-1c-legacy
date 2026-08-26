@@ -2,7 +2,7 @@ name: build-x86
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'feature/**' ]
     tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
