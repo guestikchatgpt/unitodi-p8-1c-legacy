@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 [assembly: ComVisible(true)]
@@ -50,11 +51,10 @@ namespace UnitodiP8Legacy
         private const string PosConnectorProgId = "POSConnectorInterface-posconlib.1";
         private const string PacketProgId = "SAPacket-posconlib.1";
 
-        // Merchant-specific values are deliberately not compiled into the public binary.
         private string terminalId = "";
         private int timeoutMs = 180000;
         private bool printSlipOnTerminal = true;
-        private int lastErrorCode;
+        private int lastErrorCode = 0;
         private string lastErrorDescription = "OK";
 
         private static readonly string[] MethodEn =
@@ -138,12 +138,12 @@ namespace UnitodiP8Legacy
                 switch (methodNum)
                 {
                     case 0:
-                        retValue = "0.4.0-test";
+                        retValue = "0.5.0-payment-return-test";
                         return;
                     case 1:
                         EnsureLength(p, 7);
                         p[0] = "Unitodi P8 Bio via PBF/POSConnector";
-                        p[1] = "Legacy BPO 2.x compatibility driver; payment operations are disabled in this test build.";
+                        p[1] = "Legacy BPO 2.x driver. Device test, payment and return are enabled; other monetary operations remain blocked.";
                         p[2] = "ЭквайринговыйТерминал";
                         p[3] = 2002;
                         p[4] = true;
@@ -167,18 +167,7 @@ namespace UnitodiP8Legacy
                         return;
                     case 5:
                         EnsureLength(p, 1);
-                        if (!IsPosConnectorAvailable())
-                        {
-                            SetError(10001, "32-bit POSConnector COM is not registered.");
-                            retValue = false;
-                            return;
-                        }
-                        if (String.IsNullOrWhiteSpace(terminalId))
-                        {
-                            SetError(10002, "TerminalID is not configured.");
-                            retValue = false;
-                            return;
-                        }
+                        if (!ValidateRuntime()) { retValue = false; return; }
                         p[0] = "PBF:" + terminalId;
                         SetOk();
                         retValue = true;
@@ -201,11 +190,17 @@ namespace UnitodiP8Legacy
                         SetOk();
                         retValue = true;
                         return;
+                    case 10:
+                        retValue = CardOperation(1, p, false);
+                        return;
+                    case 11:
+                        retValue = CardOperation(29, p, true);
+                        return;
                     case 18:
                         retValue = printSlipOnTerminal;
                         return;
                     default:
-                        SetError(12000, "Payment operations are disabled in the current test build.");
+                        SetError(12000, "This monetary operation is not enabled in build 0.5.0-payment-return-test.");
                         retValue = false;
                         return;
                 }
@@ -259,99 +254,248 @@ namespace UnitodiP8Legacy
                    "</Group></Page></Settings>";
         }
 
-        private bool DeviceTest(ref object description)
+        private bool ValidateRuntime()
         {
+            if (!IsPosConnectorAvailable())
+            {
+                SetError(10001, "32-bit POSConnector COM is not registered.");
+                return false;
+            }
             if (String.IsNullOrWhiteSpace(terminalId))
             {
                 SetError(10002, "TerminalID is not configured.");
-                description = lastErrorDescription;
+                return false;
+            }
+            return true;
+        }
+
+        private bool DeviceTest(ref object description)
+        {
+            if (!ValidateRuntime()) { description = lastErrorDescription; return false; }
+            ExchangeResult result;
+            bool ok = Exchange(26, null, null, out result);
+            if (ok)
+            {
+                description = "PBF connection OK; status=" + result.Status.ToString(CultureInfo.InvariantCulture) +
+                              "; host=" + result.ResponseCode + "; " + result.Message;
+                return true;
+            }
+            description = lastErrorDescription;
+            return false;
+        }
+
+        private bool CardOperation(int operationCode, object[] p, bool requireOriginalRrn)
+        {
+            EnsureLength(p, 7);
+            if (!ValidateRuntime()) { p[6] = lastErrorDescription; return false; }
+
+            decimal amountRub;
+            try { amountRub = Convert.ToDecimal(p[2], CultureInfo.InvariantCulture); }
+            catch
+            {
+                SetError(10010, "Invalid card operation amount.");
+                p[6] = lastErrorDescription;
                 return false;
             }
 
-            object pc = null, req = null, rsp = null;
+            long amountKopecks;
             try
             {
-                Type pcType = Type.GetTypeFromProgID(PosConnectorProgId, true);
-                Type packetType = Type.GetTypeFromProgID(PacketProgId, true);
+                decimal kopecks = Decimal.Round(amountRub * 100m, 0, MidpointRounding.AwayFromZero);
+                amountKopecks = Decimal.ToInt64(kopecks);
+            }
+            catch
+            {
+                SetError(10010, "Card operation amount is out of range.");
+                p[6] = lastErrorDescription;
+                return false;
+            }
+
+            if (amountKopecks <= 0)
+            {
+                SetError(10010, "Card operation amount must be greater than zero.");
+                p[6] = lastErrorDescription;
+                return false;
+            }
+
+            string originalRrn = requireOriginalRrn ? ToText(p[4]).Trim() : "";
+            if (requireOriginalRrn && originalRrn.Length == 0)
+            {
+                SetError(10012, "Return requires the RRN of the original payment.");
+                p[6] = lastErrorDescription;
+                return false;
+            }
+
+            ExchangeResult result;
+            bool ok = Exchange(operationCode, amountKopecks, originalRrn, out result);
+            if (!ok)
+            {
+                p[6] = result.Slip.Length > 0 ? result.Slip : lastErrorDescription;
+                return false;
+            }
+
+            if (result.Pan.Length > 0) p[1] = result.Pan;
+            if (result.Rrn.Length > 0) p[4] = result.Rrn;
+            if (result.AuthorizationCode.Length > 0) p[5] = result.AuthorizationCode;
+            p[6] = result.Slip.Length > 0 ? result.Slip : result.Message;
+            SetOk();
+            return true;
+        }
+
+        private bool Exchange(int operationCode, long? amountKopecks, string originalRrn, out ExchangeResult result)
+        {
+            result = new ExchangeResult();
+            object pc = null;
+            object req = null;
+            object rsp = null;
+
+            try
+            {
+                Type pcType = Type.GetTypeFromProgID(PosConnectorProgId, false);
+                Type packetType = Type.GetTypeFromProgID(PacketProgId, false);
+                if (pcType == null || packetType == null)
+                {
+                    SetError(10020, "POSConnector x86 COM is not registered.");
+                    result.Message = lastErrorDescription;
+                    return false;
+                }
+
                 pc = Activator.CreateInstance(pcType);
                 req = Activator.CreateInstance(packetType);
                 rsp = Activator.CreateInstance(packetType);
 
-                dynamic dpc = pc;
-                dynamic dreq = req;
-                dynamic drsp = rsp;
-
-                int init = dpc.InitResources();
+                int init = ToInt(ComCall(pc, "InitResources"));
                 if (init != 0)
                 {
-                    SetError((int)dpc.ErrorCode, "POSConnector InitResources: " + ToText(dpc.ErrorDescription));
-                    description = lastErrorDescription;
+                    string initDesc = ToText(ComGet(pc, "ErrorDescription"));
+                    SetError(init, "POSConnector InitResources: " + initDesc);
+                    result.Message = lastErrorDescription;
                     return false;
                 }
 
-                dreq.OperationCode = 26;
-                dreq.TerminalID = terminalId;
-                int rc = dpc.Exchange(req, rsp, timeoutMs);
-                int status = SafeInt(drsp, "Status", Int32.MinValue);
-                string host = SafeString(drsp, "ResponseCodeHost");
-                string text = SafeString(drsp, "TextResponse");
+                ComSet(req, "OperationCode", operationCode);
+                ComSet(req, "TerminalID", terminalId);
 
-                if (rc == 0 && status == 1 && (host == "" || host == "00"))
+                if (amountKopecks.HasValue)
                 {
-                    SetOk();
-                    description = "PBF connection OK; status=1; host=" + host + "; " + text;
-                    return true;
+                    ComSet(req, "Amount", amountKopecks.Value.ToString(CultureInfo.InvariantCulture));
+                    ComSet(req, "CurrencyCode", "643");
                 }
 
-                SetError(rc != 0 ? rc : 10100, "rc=" + rc.ToString(CultureInfo.InvariantCulture) + "; status=" + status.ToString(CultureInfo.InvariantCulture) + "; host=" + host + "; " + text);
-                description = lastErrorDescription;
-                return false;
+                if (!String.IsNullOrWhiteSpace(originalRrn)) ComSet(req, "ReferenceNumber", originalRrn);
+
+                int rc = ToInt(ComCall(pc, "Exchange", req, rsp, timeoutMs));
+                result.ExchangeCode = rc;
+                result.Status = SafeGetInt(rsp, "Status");
+                result.ResponseCode = SafeGetString(rsp, "ResponseCodeHost");
+                result.Message = SafeGetString(rsp, "TextResponse");
+                result.Rrn = SafeGetString(rsp, "ReferenceNumber");
+                result.AuthorizationCode = SafeGetString(rsp, "AuthorizationCode");
+                result.Pan = SafeGetString(rsp, "PAN");
+                result.Slip = SafeGetString(rsp, "ReceiptData");
+                result.OperationResult = SafeGetString(rsp, "OperationResult");
+                if (result.Slip.Length == 0) result.Slip = result.Message;
+
+                int connectorErrorCode = SafeGetInt(pc, "ErrorCode");
+                string connectorError = SafeGetString(pc, "ErrorDescription");
+                bool hostOk = result.ResponseCode.Length == 0 || result.ResponseCode == "00";
+                bool statusOk = result.Status == 1 || result.Status == Int32.MinValue;
+                bool responseOk = rc == 0 && hostOk && statusOk;
+
+                if (!responseOk)
+                {
+                    string msg = result.Message;
+                    if (msg.Length == 0) msg = connectorError;
+                    if (msg.Length == 0) msg = "PBF operation failed.";
+                    int code = rc != 0 ? rc : (connectorErrorCode != 0 && connectorErrorCode != Int32.MinValue ? connectorErrorCode : 10021);
+                    SetError(code, "op=" + operationCode.ToString(CultureInfo.InvariantCulture) +
+                                   "; rc=" + rc.ToString(CultureInfo.InvariantCulture) +
+                                   "; status=" + result.Status.ToString(CultureInfo.InvariantCulture) +
+                                   "; host=" + result.ResponseCode + "; " + msg);
+                    return false;
+                }
+
+                SetOk();
+                return true;
             }
             catch (Exception ex)
             {
-                SetError(10998, ex.GetBaseException().Message);
-                description = lastErrorDescription;
+                SetError(10022, ex.GetBaseException().Message);
+                result.Message = lastErrorDescription;
                 return false;
             }
             finally
             {
-                try { if (pc != null) { dynamic dpc = pc; dpc.FreeResources(); } } catch { }
-                ReleaseCom(rsp); ReleaseCom(req); ReleaseCom(pc);
+                if (pc != null)
+                {
+                    try { ComCall(pc, "FreeResources"); } catch { }
+                }
+                ReleaseCom(rsp);
+                ReleaseCom(req);
+                ReleaseCom(pc);
             }
         }
 
         private static bool IsPosConnectorAvailable()
         {
-            try { return Type.GetTypeFromProgID(PosConnectorProgId, false) != null; }
+            try
+            {
+                return Type.GetTypeFromProgID(PosConnectorProgId, false) != null &&
+                       Type.GetTypeFromProgID(PacketProgId, false) != null;
+            }
             catch { return false; }
         }
 
-        private static int SafeInt(dynamic obj, string name, int fallback)
+        private static object ComCall(object target, string name, params object[] args)
         {
-            try
-            {
-                object v = obj.GetType().InvokeMember(name, System.Reflection.BindingFlags.GetProperty, null, obj, null);
-                return Convert.ToInt32(v, CultureInfo.InvariantCulture);
-            }
-            catch { return fallback; }
+            return target.GetType().InvokeMember(name,
+                BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Instance,
+                null, target, args, CultureInfo.InvariantCulture);
         }
 
-        private static string SafeString(dynamic obj, string name)
+        private static object ComGet(object target, string name)
         {
-            try
-            {
-                object v = obj.GetType().InvokeMember(name, System.Reflection.BindingFlags.GetProperty, null, obj, null);
-                return ToText(v);
-            }
+            return target.GetType().InvokeMember(name,
+                BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.Instance,
+                null, target, null, CultureInfo.InvariantCulture);
+        }
+
+        private static void ComSet(object target, string name, object value)
+        {
+            target.GetType().InvokeMember(name,
+                BindingFlags.SetProperty | BindingFlags.Public | BindingFlags.Instance,
+                null, target, new object[] { value }, CultureInfo.InvariantCulture);
+        }
+
+        private static string SafeGetString(object target, string name)
+        {
+            try { return ToText(ComGet(target, name)); }
             catch { return ""; }
+        }
+
+        private static int SafeGetInt(object target, string name)
+        {
+            try { return ToInt(ComGet(target, name)); }
+            catch { return Int32.MinValue; }
+        }
+
+        private static int ToInt(object value)
+        {
+            if (value == null) return 0;
+            return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+        }
+
+        private static string ToText(object value)
+        {
+            if (value == null || value == DBNull.Value) return "";
+            return Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
         }
 
         private static void EnsureLength(object[] p, int count)
         {
-            if (p == null || p.Length < count) throw new ArgumentException("Expected at least " + count.ToString(CultureInfo.InvariantCulture) + " parameters.");
+            if (p == null || p.Length < count)
+                throw new ArgumentException("Expected at least " + count.ToString(CultureInfo.InvariantCulture) + " parameters.");
         }
-
-        private static string ToText(object value) { return value == null ? "" : Convert.ToString(value, CultureInfo.InvariantCulture) ?? ""; }
 
         private static void ReleaseCom(object obj)
         {
@@ -360,7 +504,29 @@ namespace UnitodiP8Legacy
             catch { }
         }
 
-        private void SetOk() { lastErrorCode = 0; lastErrorDescription = "OK"; }
-        private void SetError(int code, string description) { lastErrorCode = code; lastErrorDescription = description ?? "Error"; }
+        private void SetOk()
+        {
+            lastErrorCode = 0;
+            lastErrorDescription = "OK";
+        }
+
+        private void SetError(int code, string description)
+        {
+            lastErrorCode = code;
+            lastErrorDescription = description ?? "Error";
+        }
+
+        private sealed class ExchangeResult
+        {
+            public int ExchangeCode = -1;
+            public int Status = Int32.MinValue;
+            public string ResponseCode = "";
+            public string Message = "";
+            public string Rrn = "";
+            public string AuthorizationCode = "";
+            public string Pan = "";
+            public string Slip = "";
+            public string OperationResult = "";
+        }
     }
 }
