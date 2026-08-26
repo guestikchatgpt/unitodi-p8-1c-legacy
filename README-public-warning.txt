@@ -1,0 +1,1 @@
+Configure TerminalID locally. Do not commit production identifiers.
