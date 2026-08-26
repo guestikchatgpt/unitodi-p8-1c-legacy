@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using UnitodiP8Legacy;
 
 internal static class SmokeTest
@@ -36,7 +37,7 @@ internal static class SmokeTest
         object[] versionArgs = new object[0];
         object version = null;
         d.CallAsFunc(0, ref version, ref versionArgs);
-        if (!object.Equals(version, "0.5.0-payment-return-test")) return Fail("version");
+        if (!object.Equals(version, "0.5.1-payment-return-test")) return Fail("version");
 
         object[] desc = new object[7];
         object result = null;
@@ -46,6 +47,13 @@ internal static class SmokeTest
         if (!object.Equals(desc[3], 2002)) return Fail("interface revision");
         if (Convert.ToString(desc[1]).IndexOf("payment and return are enabled", StringComparison.OrdinalIgnoreCase) < 0)
             return Fail("description does not advertise enabled operations");
+
+        MethodInfo hostSuccess = typeof(Driver).GetMethod("IsHostSuccess", BindingFlags.NonPublic | BindingFlags.Static);
+        if (hostSuccess == null) return Fail("IsHostSuccess missing");
+        if (!(bool)hostSuccess.Invoke(null, new object[] { "0" })) return Fail("host code 0 rejected");
+        if (!(bool)hostSuccess.Invoke(null, new object[] { "00" })) return Fail("host code 00 rejected");
+        if (!(bool)hostSuccess.Invoke(null, new object[] { "" })) return Fail("empty host code rejected");
+        if ((bool)hostSuccess.Invoke(null, new object[] { "05" })) return Fail("host error code accepted");
 
         // CI has no merchant POSConnector. These calls must reach the payment/return
         // implementation and fail on runtime validation, not on the disabled-operation guard.
