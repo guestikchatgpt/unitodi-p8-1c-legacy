@@ -10,17 +10,17 @@ Verified base environment before this driver is introduced:
 - 1C platform: 8.3.13.1690 x86, thin client.
 - 1C Retail: 2.2.8.27.
 - BPO: 2.0.5.23 generation.
-- Unitodi P8 Bio: USB virtual serial port COM18.
+- Unitodi P8 Bio: USB virtual serial port.
 - PbfProxy: service running, TCP `127.0.0.1:40101`.
 - POSConnector x86 COM: version 0.1.11.0.
-- Terminal ID: `94678638`.
+- Terminal ID is configured locally and is not stored in this repository.
 
 Safe PBF operation `26` (`TestConnection`) was verified end-to-end with:
 
 - `Exchange rc = 0`
 - `Status = 1`
 - `ResponseCodeHost = 00`
-- `TextResponse = Операция выполнена`
+- successful terminal response.
 
 ## Architecture
 
@@ -29,11 +29,17 @@ Safe PBF operation `26` (`TestConnection`) was verified end-to-end with:
     -> AddIn.UnitodiP8Legacy
     -> POSConnector.dll x86 (COM)
     -> PbfProxy 127.0.0.1:40101
-    -> COM18
+    -> USB virtual COM port
     -> Unitodi P8 Bio
 ```
 
 The repository does **not** redistribute PBF/POSConnector binaries. They must already be installed and configured.
+
+## Current safety stage
+
+The current public build is intentionally limited to component loading, parameter configuration, opening/closing the driver and **Device Test**. Payment, return, cancellation, preauthorization and settlement entry points are exposed for compatibility discovery but return an explicit "disabled in test build" error.
+
+This is deliberate: no real payment is enabled until the exact BPO 2.0.5.23 call contract is observed on the target 1C configuration.
 
 ## CI build
 
@@ -79,15 +85,13 @@ Create the driver as a preinstalled local COM component:
 
 Initial parameters:
 
-- `TerminalID = 94678638`
+- `TerminalID = <your terminal ID>`
 - `TimeoutMs = 180000`
 - `PrintSlipOnTerminal = true`
 
 The first test in 1C must be **Device Test only**. It maps to PBF operation `26` and does not perform a payment.
 
-Do not run a real payment from 1C until the exact old-BPO call contract and persistence of receipt/RRN/TrxID have been verified.
-
-## Current PBF operation mapping
+## Planned PBF operation mapping
 
 | 1C operation | PBF OperationCode |
 |---|---:|
@@ -100,6 +104,8 @@ Do not run a real payment from 1C until the exact old-BPO call contract and pers
 | Preauthorization cancellation | 17 |
 | Emergency reversal | 53 |
 | Settlement | 59 |
+
+Only Device Test is enabled in the current test build.
 
 ## Uninstall
 
