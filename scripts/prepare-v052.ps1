@@ -7,15 +7,15 @@ $sourceOut  = 'build\UnitodiP8LegacyDriver-v052.cs'
 $testPath   = 'tests\SmokeTest.cs'
 $testOut    = 'build\SmokeTest-v052.cs'
 
-$src = Get-Content $sourcePath -Raw
+$src = Get-Content $sourcePath -Raw -Encoding UTF8
 
 $src = $src.Replace(
     '0.5.1-payment-return-test',
-    '0.5.2-payment-return-cancel-test')
+    '0.5.3-payment-return-cancel-utf8-test')
 
 $src = $src.Replace(
     'Legacy BPO 2.x driver. Device test, payment and return are enabled. PBF host success codes 0 and 00 are accepted.',
-    'Legacy BPO 2.x driver. Device test, payment and return are enabled; 1C cancellation is routed to an RRN-addressed PBF refund. PBF host success codes 0 and 00 are accepted.')
+    'Legacy BPO 2.x driver. Device test, payment and return are enabled; 1C cancellation is routed to an RRN-addressed PBF refund. UTF-8 interface names preserved. PBF host success codes 0 and 00 are accepted.')
 
 $oldSwitch = @'
                     case 11:
@@ -29,11 +29,6 @@ $newSwitch = @'
                         retValue = CardOperation(29, p, true);
                         return;
                     case 12:
-                        // Retail 2.2 uses CancelPaymentByPaymentCard for same-shift returns.
-                        // PBF Void (operation 4) additionally requires PBF TrxID field 23,
-                        // which the legacy 1C driver contract does not pass to us.
-                        // Use the RRN-addressed PBF Return operation (29) instead of an
-                        // unsafe last-operation reversal.
                         retValue = CardOperation(29, p, true);
                         return;
                     case 18:
@@ -45,10 +40,10 @@ if (-not $src.Contains($oldSwitch)) {
 $src = $src.Replace($oldSwitch, $newSwitch)
 Set-Content -Path $sourceOut -Value $src -Encoding UTF8
 
-$test = Get-Content $testPath -Raw
+$test = Get-Content $testPath -Raw -Encoding UTF8
 $test = $test.Replace(
     '0.5.1-payment-return-test',
-    '0.5.2-payment-return-cancel-test')
+    '0.5.3-payment-return-cancel-utf8-test')
 
 $anchor = @'
         object[] versionArgs = new object[0];
@@ -56,7 +51,7 @@ $anchor = @'
 
 $cancelLookup = @'
         method = -1;
-        d.FindMethod("ОтменитьПлатежПоПлатежнойКарте", ref method);
+        d.FindMethod("CancelPaymentByPaymentCard", ref method);
         if (method != 12) return Fail("cancel lookup");
         paramCount = 0;
         d.GetNParams(method, ref paramCount);
