@@ -42,6 +42,13 @@ internal static class SmokeTest
         if (paramCount != 7) return Fail("cancel parameter count");
 
         method = -1;
+        d.FindMethod("АварийнаяОтменаОперации", ref method);
+        if (method != 16) return Fail("emergency reversal lookup");
+        paramCount = 0;
+        d.GetNParams(method, ref paramCount);
+        if (paramCount != 1) return Fail("emergency reversal parameter count");
+
+        method = -1;
         d.FindMethod("ИтогиДняПоКартам", ref method);
         if (method != 17) return Fail("settlement lookup");
         paramCount = 0;
@@ -51,7 +58,7 @@ internal static class SmokeTest
         object[] versionArgs = new object[0];
         object version = null;
         d.CallAsFunc(0, ref version, ref versionArgs);
-        if (!object.Equals(version, "0.5.6-host-zeroes-test")) return Fail("version");
+        if (!object.Equals(version, "0.6.0-production-core")) return Fail("version");
 
         object[] desc = new object[7];
         object result = null;
@@ -59,8 +66,8 @@ internal static class SmokeTest
         if (!(result is bool) || !(bool)result) return Fail("GetDescription result");
         if (!object.Equals(desc[2], "ЭквайринговыйТерминал")) return Fail("equipment type");
         if (!object.Equals(desc[3], 2002)) return Fail("interface revision");
-        if (Convert.ToString(desc[1]).IndexOf("settlement are enabled", StringComparison.OrdinalIgnoreCase) < 0)
-            return Fail("description does not advertise settlement");
+        if (Convert.ToString(desc[1]).IndexOf("bank-slip printing through 1C", StringComparison.OrdinalIgnoreCase) < 0)
+            return Fail("description does not advertise 1C slip printing");
 
         MethodInfo hostSuccess = typeof(Driver).GetMethod("IsHostSuccess", BindingFlags.NonPublic | BindingFlags.Static);
         if (hostSuccess == null) return Fail("IsHostSuccess missing");
@@ -71,6 +78,9 @@ internal static class SmokeTest
         if (!(bool)hostSuccess.Invoke(null, new object[] { "" })) return Fail("empty host code rejected");
         if ((bool)hostSuccess.Invoke(null, new object[] { "05" })) return Fail("host error code accepted");
         if ((bool)hostSuccess.Invoke(null, new object[] { "0005" })) return Fail("mixed host error code accepted");
+
+        MethodInfo trxLookup = typeof(Driver).GetMethod("FindSaleTrxIdByRrn", BindingFlags.NonPublic | BindingFlags.Static);
+        if (trxLookup == null) return Fail("FindSaleTrxIdByRrn missing");
 
         MethodInfo extract = typeof(Driver).GetMethod("ExtractRrnFromSlip", BindingFlags.NonPublic | BindingFlags.Static);
         if (extract == null) return Fail("ExtractRrnFromSlip missing");
@@ -97,11 +107,22 @@ internal static class SmokeTest
         if (!(result is bool) || (bool)result) return Fail("cancel validation result");
         if (GetLastErrorCode(d) == 12000) return Fail("cancel still disabled");
 
+        object[] emergency = { "device" };
+        result = null;
+        d.CallAsFunc(16, ref result, ref emergency);
+        if (!(result is bool) || (bool)result) return Fail("emergency validation result");
+        if (GetLastErrorCode(d) == 12000) return Fail("emergency reversal still disabled");
+
         object[] settlement = { "device", "" };
         result = null;
         d.CallAsFunc(17, ref result, ref settlement);
         if (!(result is bool) || (bool)result) return Fail("settlement validation result");
         if (GetLastErrorCode(d) == 12000) return Fail("settlement still disabled");
+
+        object[] printArgs = new object[0];
+        result = null;
+        d.CallAsFunc(18, ref result, ref printArgs);
+        if (!(result is bool) || (bool)result) return Fail("PrintSlipOnTerminal must be false");
 
         Console.WriteLine("Smoke tests passed.");
         return 0;
