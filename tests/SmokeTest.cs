@@ -17,8 +17,8 @@ internal static class SmokeTest
         if (n != 19) return Fail("method count");
 
         int method = -1;
-        d.FindMethod("DeviceTest", ref method);
-        if (method != 7) return Fail("DeviceTest lookup");
+        d.FindMethod("ПолучитьНомерВерсии", ref method);
+        if (method != 0) return Fail("russian GetVersion lookup");
 
         method = -1;
         d.FindMethod("ОплатитьПлатежнойКартой", ref method);
@@ -34,10 +34,17 @@ internal static class SmokeTest
         d.GetNParams(method, ref paramCount);
         if (paramCount != 7) return Fail("return parameter count");
 
+        method = -1;
+        d.FindMethod("ОтменитьПлатежПоПлатежнойКарте", ref method);
+        if (method != 12) return Fail("cancel lookup");
+        paramCount = 0;
+        d.GetNParams(method, ref paramCount);
+        if (paramCount != 7) return Fail("cancel parameter count");
+
         object[] versionArgs = new object[0];
         object version = null;
         d.CallAsFunc(0, ref version, ref versionArgs);
-        if (!object.Equals(version, "0.5.1-payment-return-test")) return Fail("version");
+        if (!object.Equals(version, "0.5.4-rrn-journal-test")) return Fail("version");
 
         object[] desc = new object[7];
         object result = null;
@@ -45,8 +52,8 @@ internal static class SmokeTest
         if (!(result is bool) || !(bool)result) return Fail("GetDescription result");
         if (!object.Equals(desc[2], "ЭквайринговыйТерминал")) return Fail("equipment type");
         if (!object.Equals(desc[3], 2002)) return Fail("interface revision");
-        if (Convert.ToString(desc[1]).IndexOf("payment and return are enabled", StringComparison.OrdinalIgnoreCase) < 0)
-            return Fail("description does not advertise enabled operations");
+        if (Convert.ToString(desc[1]).IndexOf("journaled locally", StringComparison.OrdinalIgnoreCase) < 0)
+            return Fail("description does not advertise journal fallback");
 
         MethodInfo hostSuccess = typeof(Driver).GetMethod("IsHostSuccess", BindingFlags.NonPublic | BindingFlags.Static);
         if (hostSuccess == null) return Fail("IsHostSuccess missing");
@@ -55,8 +62,13 @@ internal static class SmokeTest
         if (!(bool)hostSuccess.Invoke(null, new object[] { "" })) return Fail("empty host code rejected");
         if ((bool)hostSuccess.Invoke(null, new object[] { "05" })) return Fail("host error code accepted");
 
-        // CI has no merchant POSConnector. These calls must reach the payment/return
-        // implementation and fail on runtime validation, not on the disabled-operation guard.
+        MethodInfo extract = typeof(Driver).GetMethod("ExtractRrnFromSlip", BindingFlags.NonPublic | BindingFlags.Static);
+        if (extract == null) return Fail("ExtractRrnFromSlip missing");
+        string rrn = (string)extract.Invoke(null, new object[] {
+            "ОПЛАТА\r\nНОМЕР ССЫЛКИ RRN: 018208579376\r\nКОД АВТОРИЗАЦИИ:217256"
+        });
+        if (rrn != "018208579376") return Fail("RRN extraction");
+
         object[] pay = { "device", "", 1.23m, "receipt", "", "", "" };
         result = null;
         d.CallAsFunc(10, ref result, ref pay);
@@ -68,6 +80,12 @@ internal static class SmokeTest
         d.CallAsFunc(11, ref result, ref ret);
         if (!(result is bool) || (bool)result) return Fail("return validation result");
         if (GetLastErrorCode(d) == 12000) return Fail("return still disabled");
+
+        object[] cancel = { "device", "", 1.23m, "receipt", "123456789012", "AUTH", "" };
+        result = null;
+        d.CallAsFunc(12, ref result, ref cancel);
+        if (!(result is bool) || (bool)result) return Fail("cancel validation result");
+        if (GetLastErrorCode(d) == 12000) return Fail("cancel still disabled");
 
         Console.WriteLine("Smoke tests passed.");
         return 0;
