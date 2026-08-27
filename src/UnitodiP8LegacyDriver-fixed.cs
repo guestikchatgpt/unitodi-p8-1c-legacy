@@ -146,12 +146,12 @@ namespace UnitodiP8Legacy
                 switch (methodNum)
                 {
                     case 0:
-                        retValue = "0.5.4-rrn-journal-test";
+                        retValue = "0.5.5-settlement-test";
                         return;
                     case 1:
                         EnsureLength(p, 7);
                         p[0] = "Unitodi P8 Bio via PBF/POSConnector";
-                        p[1] = "Legacy BPO 2.x driver. Device test, payment, return and cancellation are enabled. Sale RRN is extracted from the PBF slip when needed and journaled locally for safe return fallback.";
+                        p[1] = "Legacy BPO 2.x driver. Device test, payment, return, cancellation and settlement are enabled. Sale RRN is extracted from the PBF slip when needed and journaled locally for safe return fallback.";
                         p[2] = "ЭквайринговыйТерминал";
                         p[3] = 2002;
                         p[4] = true;
@@ -207,11 +207,14 @@ namespace UnitodiP8Legacy
                     case 12:
                         retValue = CardOperation(29, p, true);
                         return;
+                    case 17:
+                        retValue = SettlementOperation(p);
+                        return;
                     case 18:
                         retValue = printSlipOnTerminal;
                         return;
                     default:
-                        SetError(12000, "This monetary operation is not enabled in build 0.5.4-rrn-journal-test.");
+                        SetError(12000, "This monetary operation is not enabled in build 0.5.5-settlement-test.");
                         retValue = false;
                         return;
                 }
@@ -297,6 +300,34 @@ namespace UnitodiP8Legacy
             }
             description = lastErrorDescription;
             return false;
+        }
+
+        private bool SettlementOperation(object[] p)
+        {
+            EnsureLength(p, 2);
+            Trace("CALL method=17; p0=" + SafeLog(ToText(p[0])) + "; p1=" + SafeLog(ToText(p[1])));
+
+            if (!ValidateRuntime())
+            {
+                p[1] = lastErrorDescription;
+                return false;
+            }
+
+            ExchangeResult result;
+            bool ok = Exchange(59, null, null, out result);
+            if (!ok)
+            {
+                p[1] = result.Slip.Length > 0 ? result.Slip : lastErrorDescription;
+                Trace("SETTLEMENT FAIL; error=" + SafeLog(lastErrorDescription));
+                return false;
+            }
+
+            p[1] = result.Slip.Length > 0 ? result.Slip : result.Message;
+            Trace("SETTLEMENT OK; status=" + result.Status.ToString(CultureInfo.InvariantCulture) +
+                  "; host=" + SafeLog(result.ResponseCode) +
+                  "; text=" + SafeLog(result.Message));
+            SetOk();
+            return true;
         }
 
         private bool CardOperation(int operationCode, object[] p, bool requireOriginalRrn)
