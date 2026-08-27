@@ -10,8 +10,8 @@ $testOut    = 'build\SmokeTest-v052.cs'
 $src = Get-Content $sourcePath -Raw -Encoding UTF8
 $test = Get-Content $testPath -Raw -Encoding UTF8
 
-if ($src -notmatch '0\.5\.5-settlement-test') {
-    throw 'Expected v0.5.5 source version marker was not found.'
+if ($src -notmatch '0\.5\.6-host-zeroes-test') {
+    throw 'Expected v0.5.6 source version marker was not found.'
 }
 if ($src -notmatch 'case 12:') {
     throw 'CancelPaymentByPaymentCard implementation is missing.'
