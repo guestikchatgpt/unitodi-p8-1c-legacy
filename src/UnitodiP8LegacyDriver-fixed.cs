@@ -146,7 +146,7 @@ namespace UnitodiP8Legacy
                 switch (methodNum)
                 {
                     case 0:
-                        retValue = "0.5.5-settlement-test";
+                        retValue = "0.5.6-host-zeroes-test";
                         return;
                     case 1:
                         EnsureLength(p, 7);
@@ -214,7 +214,7 @@ namespace UnitodiP8Legacy
                         retValue = printSlipOnTerminal;
                         return;
                     default:
-                        SetError(12000, "This monetary operation is not enabled in build 0.5.5-settlement-test.");
+                        SetError(12000, "This monetary operation is not enabled in build 0.5.6-host-zeroes-test.");
                         retValue = false;
                         return;
                 }
@@ -701,7 +701,9 @@ namespace UnitodiP8Legacy
         {
             if (String.IsNullOrWhiteSpace(code)) return true;
             code = code.Trim();
-            return code == "0" || code == "00";
+            for (int i = 0; i < code.Length; i++)
+                if (code[i] != '0') return false;
+            return code.Length > 0;
         }
 
         private static bool IsPosConnectorAvailable()
