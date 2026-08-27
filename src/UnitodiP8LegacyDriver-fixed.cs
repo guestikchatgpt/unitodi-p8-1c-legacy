@@ -155,7 +155,7 @@ namespace UnitodiP8Legacy
                     case 1:
                         EnsureLength(p, 7);
                         p[0] = "Unitodi P8 Bio via PBF/POSConnector";
-                        p[1] = "Legacy BPO 2.x driver. Payment, return, safe cancellation, settlement and bank-slip printing through 1C are enabled. RRN and PBF TrxID are journaled locally; emergency reversal uses only the exact in-process sale.";
+                        p[1] = "Legacy BPO 2.x driver. Payment, return, settlement, bank-slip printing through 1C and guarded emergency reversal are enabled. RRN and PBF TrxID are journaled locally; emergency reversal uses only the exact in-process sale.";
                         p[2] = "ЭквайринговыйТерминал";
                         p[3] = 2002;
                         p[4] = true;
@@ -209,7 +209,9 @@ namespace UnitodiP8Legacy
                         retValue = CardOperation(29, p, true);
                         return;
                     case 12:
-                        retValue = CancelPaymentOperation(p);
+                        // This Retail 2.2 build calls CancelPaymentByPaymentCard for ordinary
+                        // customer returns. Keep the field-verified RRN-addressed refund mapping.
+                        retValue = CardOperation(29, p, true);
                         return;
                     case 16:
                         retValue = EmergencyReversalOperation(p);
@@ -332,70 +334,6 @@ namespace UnitodiP8Legacy
             Trace("SETTLEMENT OK; status=" + result.Status.ToString(CultureInfo.InvariantCulture) +
                   "; host=" + SafeLog(result.ResponseCode) +
                   "; text=" + SafeLog(result.Message));
-            SetOk();
-            return true;
-        }
-
-        private bool CancelPaymentOperation(object[] p)
-        {
-            EnsureLength(p, 7);
-            if (!ValidateRuntime()) { p[6] = lastErrorDescription; return false; }
-
-            long amountKopecks;
-            if (!TryGetAmountKopecks(p[2], out amountKopecks))
-            {
-                p[6] = lastErrorDescription;
-                return false;
-            }
-
-            string receiptNumber = ToText(p[3]).Trim();
-            string cardHint = NormalizePan(ToText(p[1]));
-            string originalRrn = ToText(p[4]).Trim();
-
-            if (originalRrn.Length == 0)
-            {
-                originalRrn = FindRecordedSaleRrn(receiptNumber, amountKopecks, cardHint);
-                if (originalRrn.Length > 0)
-                    p[4] = originalRrn;
-            }
-
-            if (originalRrn.Length == 0)
-            {
-                SetError(10012, "Cancel requires the original RRN and no unique matching sale was found.");
-                p[6] = lastErrorDescription;
-                return false;
-            }
-
-            string originalTrxId = FindSaleTrxIdByRrn(originalRrn);
-            if (originalTrxId.Length == 0)
-            {
-                Trace("CANCEL fallback to refund op=29: no journaled TrxID for rrn=" + SafeLog(originalRrn));
-                return CardOperation(29, p, true);
-            }
-
-            ExchangeResult result;
-            bool ok = Exchange(4, null, originalRrn, originalTrxId, out result);
-            if (!ok)
-            {
-                p[6] = result.Slip.Length > 0 ? result.Slip : lastErrorDescription;
-                Trace("VOID FAIL op=4; rrn=" + SafeLog(originalRrn) +
-                      "; trx=" + SafeLog(originalTrxId) +
-                      "; error=" + SafeLog(lastErrorDescription));
-                return false;
-            }
-
-            if (result.Rrn.Length > 0) p[4] = result.Rrn;
-            if (result.AuthorizationCode.Length > 0) p[5] = result.AuthorizationCode;
-            p[6] = result.Slip.Length > 0 ? result.Slip : result.Message;
-
-            AppendJournal("VOID", receiptNumber, amountKopecks, result.Rrn,
-                          result.AuthorizationCode, result.Pan, originalRrn,
-                          result.TrxId.Length > 0 ? result.TrxId : originalTrxId);
-            if (String.Equals(pendingSaleRrn, originalRrn, StringComparison.OrdinalIgnoreCase))
-                ClearPendingSale();
-
-            Trace("VOID OK op=4; rrn=" + SafeLog(originalRrn) +
-                  "; trx=" + SafeLog(originalTrxId));
             SetOk();
             return true;
         }
