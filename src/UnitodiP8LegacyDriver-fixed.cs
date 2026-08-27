@@ -57,9 +57,13 @@ namespace UnitodiP8Legacy
 
         private string terminalId = "";
         private int timeoutMs = 180000;
-        private bool printSlipOnTerminal = true;
+        private bool printSlipOnTerminal = false;
         private int lastErrorCode = 0;
         private string lastErrorDescription = "OK";
+        private string pendingSaleRrn = "";
+        private string pendingSaleTrxId = "";
+        private long pendingSaleAmountKopecks = 0;
+        private DateTime pendingSaleAt = DateTime.MinValue;
         private static readonly object FileLock = new object();
 
         private static readonly string[] MethodEn =
@@ -146,12 +150,12 @@ namespace UnitodiP8Legacy
                 switch (methodNum)
                 {
                     case 0:
-                        retValue = "0.5.6-host-zeroes-test";
+                        retValue = "0.6.0-production-core";
                         return;
                     case 1:
                         EnsureLength(p, 7);
                         p[0] = "Unitodi P8 Bio via PBF/POSConnector";
-                        p[1] = "Legacy BPO 2.x driver. Device test, payment, return, cancellation and settlement are enabled. Sale RRN is extracted from the PBF slip when needed and journaled locally for safe return fallback.";
+                        p[1] = "Legacy BPO 2.x driver. Payment, return, safe cancellation, settlement and bank-slip printing through 1C are enabled. RRN and PBF TrxID are journaled locally; emergency reversal uses only the exact in-process sale.";
                         p[2] = "ЭквайринговыйТерминал";
                         p[3] = 2002;
                         p[4] = true;
@@ -205,16 +209,19 @@ namespace UnitodiP8Legacy
                         retValue = CardOperation(29, p, true);
                         return;
                     case 12:
-                        retValue = CardOperation(29, p, true);
+                        retValue = CancelPaymentOperation(p);
+                        return;
+                    case 16:
+                        retValue = EmergencyReversalOperation(p);
                         return;
                     case 17:
                         retValue = SettlementOperation(p);
                         return;
                     case 18:
-                        retValue = printSlipOnTerminal;
+                        retValue = false;
                         return;
                     default:
-                        SetError(12000, "This monetary operation is not enabled in build 0.5.6-host-zeroes-test.");
+                        SetError(12000, "This monetary operation is not enabled in build 0.6.0-production-core.");
                         retValue = false;
                         return;
                 }
@@ -249,12 +256,11 @@ namespace UnitodiP8Legacy
             }
             if (String.Equals(name, "PrintSlipOnTerminal", StringComparison.OrdinalIgnoreCase))
             {
-                try { printSlipOnTerminal = Convert.ToBoolean(value, CultureInfo.InvariantCulture); }
-                catch
-                {
-                    string s = ToText(value).Trim();
-                    printSlipOnTerminal = s == "1" || s.Equals("true", StringComparison.OrdinalIgnoreCase) || s.Equals("да", StringComparison.OrdinalIgnoreCase);
-                }
+                // Integrated PBF returns ReceiptData to 1C. The legacy BPO must print
+                // that bank slip through the fiscal printer; the P8 does not print
+                // approved slips itself in this mode. Accept old persisted values,
+                // but force the effective capability to false.
+                printSlipOnTerminal = false;
                 SetOk();
                 return true;
             }
@@ -268,7 +274,7 @@ namespace UnitodiP8Legacy
                    "<Settings><Page Caption=\"PBF / POSConnector\"><Group Caption=\"Connection\">" +
                    "<Parameter Name=\"TerminalID\" Caption=\"Terminal ID\" TypeValue=\"String\" DefaultValue=\"\"/>" +
                    "<Parameter Name=\"TimeoutMs\" Caption=\"Operation timeout, ms\" TypeValue=\"Number\" DefaultValue=\"" + timeoutMs.ToString(CultureInfo.InvariantCulture) + "\"/>" +
-                   "<Parameter Name=\"PrintSlipOnTerminal\" Caption=\"Terminal prints slip\" TypeValue=\"Boolean\" DefaultValue=\"" + (printSlipOnTerminal ? "true" : "false") + "\"/>" +
+                   "<Parameter Name=\"PrintSlipOnTerminal\" Caption=\"Terminal prints slip (forced off in integrated mode)\" TypeValue=\"Boolean\" DefaultValue=\"false\"/>" +
                    "</Group></Page></Settings>";
         }
 
@@ -330,21 +336,117 @@ namespace UnitodiP8Legacy
             return true;
         }
 
-        private bool CardOperation(int operationCode, object[] p, bool requireOriginalRrn)
+        private bool CancelPaymentOperation(object[] p)
         {
             EnsureLength(p, 7);
             if (!ValidateRuntime()) { p[6] = lastErrorDescription; return false; }
 
-            decimal amountRub;
-            try { amountRub = Convert.ToDecimal(p[2], CultureInfo.InvariantCulture); }
-            catch
+            long amountKopecks;
+            if (!TryGetAmountKopecks(p[2], out amountKopecks))
             {
-                SetError(10010, "Invalid card operation amount.");
                 p[6] = lastErrorDescription;
                 return false;
             }
 
-            long amountKopecks;
+            string receiptNumber = ToText(p[3]).Trim();
+            string cardHint = NormalizePan(ToText(p[1]));
+            string originalRrn = ToText(p[4]).Trim();
+
+            if (originalRrn.Length == 0)
+            {
+                originalRrn = FindRecordedSaleRrn(receiptNumber, amountKopecks, cardHint);
+                if (originalRrn.Length > 0)
+                    p[4] = originalRrn;
+            }
+
+            if (originalRrn.Length == 0)
+            {
+                SetError(10012, "Cancel requires the original RRN and no unique matching sale was found.");
+                p[6] = lastErrorDescription;
+                return false;
+            }
+
+            string originalTrxId = FindSaleTrxIdByRrn(originalRrn);
+            if (originalTrxId.Length == 0)
+            {
+                Trace("CANCEL fallback to refund op=29: no journaled TrxID for rrn=" + SafeLog(originalRrn));
+                return CardOperation(29, p, true);
+            }
+
+            ExchangeResult result;
+            bool ok = Exchange(4, null, originalRrn, originalTrxId, out result);
+            if (!ok)
+            {
+                p[6] = result.Slip.Length > 0 ? result.Slip : lastErrorDescription;
+                Trace("VOID FAIL op=4; rrn=" + SafeLog(originalRrn) +
+                      "; trx=" + SafeLog(originalTrxId) +
+                      "; error=" + SafeLog(lastErrorDescription));
+                return false;
+            }
+
+            if (result.Rrn.Length > 0) p[4] = result.Rrn;
+            if (result.AuthorizationCode.Length > 0) p[5] = result.AuthorizationCode;
+            p[6] = result.Slip.Length > 0 ? result.Slip : result.Message;
+
+            AppendJournal("VOID", receiptNumber, amountKopecks, result.Rrn,
+                          result.AuthorizationCode, result.Pan, originalRrn,
+                          result.TrxId.Length > 0 ? result.TrxId : originalTrxId);
+            if (String.Equals(pendingSaleRrn, originalRrn, StringComparison.OrdinalIgnoreCase))
+                ClearPendingSale();
+
+            Trace("VOID OK op=4; rrn=" + SafeLog(originalRrn) +
+                  "; trx=" + SafeLog(originalTrxId));
+            SetOk();
+            return true;
+        }
+
+        private bool EmergencyReversalOperation(object[] p)
+        {
+            EnsureLength(p, 1);
+            Trace("CALL method=16 EmergencyReversal");
+
+            if (!ValidateRuntime()) return false;
+
+            if (pendingSaleRrn.Length == 0 || pendingSaleTrxId.Length == 0 ||
+                pendingSaleAt == DateTime.MinValue ||
+                DateTime.Now.Subtract(pendingSaleAt) > TimeSpan.FromMinutes(5))
+            {
+                SetError(10030, "Emergency reversal refused: no exact recent in-process sale with RRN and TrxID.");
+                Trace("EMERGENCY REVERSAL BLOCKED: no safe pending sale");
+                return false;
+            }
+
+            ExchangeResult result;
+            bool ok = Exchange(4, null, pendingSaleRrn, pendingSaleTrxId, out result);
+            if (!ok)
+            {
+                Trace("EMERGENCY VOID FAIL; rrn=" + SafeLog(pendingSaleRrn) +
+                      "; trx=" + SafeLog(pendingSaleTrxId) +
+                      "; error=" + SafeLog(lastErrorDescription));
+                return false;
+            }
+
+            AppendJournal("EMERGENCY_VOID", "", pendingSaleAmountKopecks, result.Rrn,
+                          result.AuthorizationCode, result.Pan, pendingSaleRrn,
+                          result.TrxId.Length > 0 ? result.TrxId : pendingSaleTrxId);
+            Trace("EMERGENCY VOID OK; rrn=" + SafeLog(pendingSaleRrn) +
+                  "; trx=" + SafeLog(pendingSaleTrxId));
+            ClearPendingSale();
+            SetOk();
+            return true;
+        }
+
+        private bool TryGetAmountKopecks(object value, out long amountKopecks)
+        {
+            amountKopecks = 0;
+            decimal amountRub;
+            try { amountRub = Convert.ToDecimal(value, CultureInfo.InvariantCulture); }
+            catch
+            {
+                SetError(10010, "Invalid card operation amount.");
+                return false;
+            }
+
             try
             {
                 decimal kopecks = Decimal.Round(amountRub * 100m, 0, MidpointRounding.AwayFromZero);
@@ -353,13 +455,33 @@ namespace UnitodiP8Legacy
             catch
             {
                 SetError(10010, "Card operation amount is out of range.");
-                p[6] = lastErrorDescription;
                 return false;
             }
 
             if (amountKopecks <= 0)
             {
                 SetError(10010, "Card operation amount must be greater than zero.");
+                return false;
+            }
+            return true;
+        }
+
+        private void ClearPendingSale()
+        {
+            pendingSaleRrn = "";
+            pendingSaleTrxId = "";
+            pendingSaleAmountKopecks = 0;
+            pendingSaleAt = DateTime.MinValue;
+        }
+
+        private bool CardOperation(int operationCode, object[] p, bool requireOriginalRrn)
+        {
+            EnsureLength(p, 7);
+            if (!ValidateRuntime()) { p[6] = lastErrorDescription; return false; }
+
+            long amountKopecks;
+            if (!TryGetAmountKopecks(p[2], out amountKopecks))
+            {
                 p[6] = lastErrorDescription;
                 return false;
             }
@@ -408,12 +530,18 @@ namespace UnitodiP8Legacy
             if (operationCode == 1)
             {
                 AppendJournal("SALE", receiptNumber, amountKopecks, result.Rrn,
-                              result.AuthorizationCode, result.Pan, "");
+                              result.AuthorizationCode, result.Pan, "", result.TrxId);
+                pendingSaleRrn = result.Rrn;
+                pendingSaleTrxId = result.TrxId;
+                pendingSaleAmountKopecks = amountKopecks;
+                pendingSaleAt = DateTime.Now;
             }
             else if (operationCode == 29)
             {
                 AppendJournal("RETURN", receiptNumber, amountKopecks, result.Rrn,
-                              result.AuthorizationCode, result.Pan, originalRrn);
+                              result.AuthorizationCode, result.Pan, originalRrn, result.TrxId);
+                if (String.Equals(pendingSaleRrn, originalRrn, StringComparison.OrdinalIgnoreCase))
+                    ClearPendingSale();
             }
 
             Trace("CARD OK op=" + operationCode.ToString(CultureInfo.InvariantCulture) +
@@ -422,6 +550,9 @@ namespace UnitodiP8Legacy
                   "; rrn=" + SafeLog(result.Rrn) +
                   "; refRaw=" + SafeLog(result.ReferenceNumberRaw) +
                   "; auth=" + SafeLog(result.AuthorizationCode) +
+                  "; trx=" + SafeLog(result.TrxId) +
+                  "; entry=" + SafeLog(result.CardEntryMode) +
+                  "; opResult=" + SafeLog(result.OperationResult) +
                   "; card=" + SafeLog(NormalizePan(result.Pan)));
 
             SetOk();
@@ -429,6 +560,11 @@ namespace UnitodiP8Legacy
         }
 
         private bool Exchange(int operationCode, long? amountKopecks, string originalRrn, out ExchangeResult result)
+        {
+            return Exchange(operationCode, amountKopecks, originalRrn, "", out result);
+        }
+
+        private bool Exchange(int operationCode, long? amountKopecks, string originalRrn, string originalTrxId, out ExchangeResult result)
         {
             result = new ExchangeResult();
             object pc = null;
@@ -470,6 +606,8 @@ namespace UnitodiP8Legacy
 
                 if (!String.IsNullOrWhiteSpace(originalRrn))
                     ComSet(req, "ReferenceNumber", originalRrn);
+                if (!String.IsNullOrWhiteSpace(originalTrxId))
+                    ComSet(req, "TrxID", originalTrxId);
 
                 int rc = ToInt(ComCall(pc, "Exchange", req, rsp, timeoutMs));
                 result.ExchangeCode = rc;
@@ -479,6 +617,9 @@ namespace UnitodiP8Legacy
                 result.ReferenceNumberRaw = SafeGetString(rsp, "ReferenceNumber").Trim();
                 result.Rrn = result.ReferenceNumberRaw;
                 result.AuthorizationCode = SafeGetString(rsp, "AuthorizationCode");
+                result.TrxId = SafeGetString(rsp, "TrxID").Trim();
+                result.CardEntryMode = SafeGetString(rsp, "CardEntryMode").Trim();
+                result.MerchantId = SafeGetString(rsp, "MerchantID").Trim();
                 result.Pan = SafeGetString(rsp, "PAN");
                 result.Slip = SafeGetString(rsp, "ReceiptData");
                 result.OperationResult = SafeGetString(rsp, "OperationResult");
@@ -616,7 +757,8 @@ namespace UnitodiP8Legacy
         }
 
         private static void AppendJournal(string type, string receipt, long amountKopecks,
-                                          string rrn, string auth, string pan, string originalRrn)
+                                          string rrn, string auth, string pan, string originalRrn,
+                                          string trxId)
         {
             try
             {
@@ -629,7 +771,8 @@ namespace UnitodiP8Legacy
                     SafeLog(rrn),
                     SafeLog(auth),
                     SafeLog(NormalizePan(pan)),
-                    SafeLog(originalRrn)
+                    SafeLog(originalRrn),
+                    SafeLog(trxId)
                 }) + Environment.NewLine;
 
                 lock (FileLock)
@@ -695,6 +838,30 @@ namespace UnitodiP8Legacy
             {
                 return "";
             }
+        }
+
+        private static string FindSaleTrxIdByRrn(string rrn)
+        {
+            if (String.IsNullOrWhiteSpace(rrn)) return "";
+            try
+            {
+                string path = GetJournalPath();
+                if (!File.Exists(path)) return "";
+                string[] lines;
+                lock (FileLock)
+                    lines = File.ReadAllLines(path, Encoding.UTF8);
+
+                for (int i = lines.Length - 1; i >= 0; i--)
+                {
+                    string[] f = lines[i].Split('\t');
+                    if (f.Length < 9 || !String.Equals(f[1], "SALE", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (String.Equals(f[4].Trim(), rrn.Trim(), StringComparison.OrdinalIgnoreCase))
+                        return f[8].Trim();
+                }
+            }
+            catch { }
+            return "";
         }
 
         private static bool IsHostSuccess(string code)
@@ -786,6 +953,9 @@ namespace UnitodiP8Legacy
             public string Rrn = "";
             public string ReferenceNumberRaw = "";
             public string AuthorizationCode = "";
+            public string TrxId = "";
+            public string CardEntryMode = "";
+            public string MerchantId = "";
             public string Pan = "";
             public string Slip = "";
             public string OperationResult = "";
