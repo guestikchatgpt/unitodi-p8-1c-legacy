@@ -34,7 +34,7 @@ Implemented and field-tested integration paths:
 | Device test | 26 | enabled |
 | Payment | 1 | enabled |
 | Return | 29 | enabled |
-| Cancel payment | 4 when exact RRN+TrxID is journaled; otherwise 29 refund | enabled |
+| Cancel payment / Retail 2.2 return callback | 29 | enabled; field-verified behavior |
 | Emergency reversal | 4 against the exact recent in-process sale only | enabled with hard safety guard |
 | Settlement | 59 | enabled |
 | Print approved bank slip | ReceiptData -> 1C fiscal printer | enabled |
@@ -72,14 +72,16 @@ Diagnostic calls/results are written to:
 
 The journal stores RRN and PBF TrxID for new transactions.
 
-CancelPaymentByPaymentCard uses real PBF Void operation 4 only when the exact original RRN
-has a stored TrxID. If no TrxID is available, the driver uses the already verified addressable
-refund operation 29. If an op=4 request was actually sent and then fails or times out, the
-driver does not automatically issue a refund, avoiding a possible double reversal.
+In the observed Retail 2.2.8.27 configuration, ordinary customer returns call
+CancelPaymentByPaymentCard (method 12), not only ReturnPaymentByPaymentCard. Therefore method
+12 intentionally remains mapped to the already verified RRN-addressed refund operation 29.
+Changing it to op=4 would break legitimate returns after clearing/settlement.
 
-EmergencyReversal never calls unsafe VoidLastOperation/op=53. It is accepted only for an
-exact sale completed by the same COM driver instance within five minutes and only when both
-RRN and TrxID are known; otherwise it fails closed.
+Real PBF Void operation 4 is reserved for EmergencyReversal after a successful payment when
+1C cannot finish the local receipt/slip flow. EmergencyReversal never calls unsafe
+VoidLastOperation/op=53. It is accepted only for the exact sale completed by the same COM
+driver instance within five minutes and only when both RRN and TrxID are known; otherwise it
+fails closed.
 
 ## Host response codes
 
