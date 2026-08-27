@@ -51,7 +51,7 @@ internal static class SmokeTest
         object[] versionArgs = new object[0];
         object version = null;
         d.CallAsFunc(0, ref version, ref versionArgs);
-        if (!object.Equals(version, "0.5.5-settlement-test")) return Fail("version");
+        if (!object.Equals(version, "0.5.6-host-zeroes-test")) return Fail("version");
 
         object[] desc = new object[7];
         object result = null;
@@ -66,8 +66,11 @@ internal static class SmokeTest
         if (hostSuccess == null) return Fail("IsHostSuccess missing");
         if (!(bool)hostSuccess.Invoke(null, new object[] { "0" })) return Fail("host code 0 rejected");
         if (!(bool)hostSuccess.Invoke(null, new object[] { "00" })) return Fail("host code 00 rejected");
+        if (!(bool)hostSuccess.Invoke(null, new object[] { "000" })) return Fail("host code 000 rejected");
+        if (!(bool)hostSuccess.Invoke(null, new object[] { "0000" })) return Fail("host code 0000 rejected");
         if (!(bool)hostSuccess.Invoke(null, new object[] { "" })) return Fail("empty host code rejected");
         if ((bool)hostSuccess.Invoke(null, new object[] { "05" })) return Fail("host error code accepted");
+        if ((bool)hostSuccess.Invoke(null, new object[] { "0005" })) return Fail("mixed host error code accepted");
 
         MethodInfo extract = typeof(Driver).GetMethod("ExtractRrnFromSlip", BindingFlags.NonPublic | BindingFlags.Static);
         if (extract == null) return Fail("ExtractRrnFromSlip missing");
