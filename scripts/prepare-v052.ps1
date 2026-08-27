@@ -28,8 +28,8 @@ if ($src -notmatch 'SettlementOperation') {
 if ($src -notmatch 'Exchange\(59, null, null') {
     throw 'PBF settlement operation 59 mapping is missing.'
 }
-if ($src -notmatch 'CancelPaymentOperation') {
-    throw 'Safe cancel implementation is missing.'
+if ($src -notmatch 'case 12:[\s\S]*CardOperation\(29, p, true\)') {
+    throw 'Retail 2.2 method 12 must keep the verified PBF refund mapping.'
 }
 if ($src -notmatch 'EmergencyReversalOperation') {
     throw 'Safe emergency reversal implementation is missing.'
