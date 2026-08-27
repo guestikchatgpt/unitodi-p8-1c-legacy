@@ -8,81 +8,19 @@ $testPath   = 'tests\SmokeTest.cs'
 $testOut    = 'build\SmokeTest-v052.cs'
 
 $src = Get-Content $sourcePath -Raw -Encoding UTF8
-
-$src = $src.Replace(
-    '0.5.1-payment-return-test',
-    '0.5.3-payment-return-cancel-utf8-test')
-
-$src = $src.Replace(
-    'Legacy BPO 2.x driver. Device test, payment and return are enabled. PBF host success codes 0 and 00 are accepted.',
-    'Legacy BPO 2.x driver. Device test, payment and return are enabled; 1C cancellation is routed to an RRN-addressed PBF refund. UTF-8 interface names preserved. PBF host success codes 0 and 00 are accepted.')
-
-$oldSwitch = @'
-                    case 11:
-                        retValue = CardOperation(29, p, true);
-                        return;
-                    case 18:
-'@
-
-$newSwitch = @'
-                    case 11:
-                        retValue = CardOperation(29, p, true);
-                        return;
-                    case 12:
-                        retValue = CardOperation(29, p, true);
-                        return;
-                    case 18:
-'@
-
-if (-not $src.Contains($oldSwitch)) {
-    throw 'Could not find the payment/return switch block in source.'
-}
-$src = $src.Replace($oldSwitch, $newSwitch)
-Set-Content -Path $sourceOut -Value $src -Encoding UTF8
-
 $test = Get-Content $testPath -Raw -Encoding UTF8
-$test = $test.Replace(
-    '0.5.1-payment-return-test',
-    '0.5.3-payment-return-cancel-utf8-test')
 
-$anchor = @'
-        object[] versionArgs = new object[0];
-'@
-
-$cancelLookup = @'
-        method = -1;
-        d.FindMethod("CancelPaymentByPaymentCard", ref method);
-        if (method != 12) return Fail("cancel lookup");
-        paramCount = 0;
-        d.GetNParams(method, ref paramCount);
-        if (paramCount != 7) return Fail("cancel parameter count");
-
-        object[] versionArgs = new object[0];
-'@
-
-if (-not $test.Contains($anchor)) {
-    throw 'Could not find version-test anchor.'
+if ($src -notmatch '0\.5\.4-rrn-journal-test') {
+    throw 'Expected v0.5.4 source version marker was not found.'
 }
-$test = $test.Replace($anchor, $cancelLookup)
-
-$tailAnchor = @'
-        Console.WriteLine("Smoke tests passed.");
-'@
-
-$cancelRuntime = @'
-        object[] cancel = { "device", "", 1.23m, "receipt", "123456789012", "AUTH", "" };
-        result = null;
-        d.CallAsFunc(12, ref result, ref cancel);
-        if (!(result is bool) || (bool)result) return Fail("cancel validation result");
-        if (GetLastErrorCode(d) == 12000) return Fail("cancel still disabled");
-
-        Console.WriteLine("Smoke tests passed.");
-'@
-
-if (-not $test.Contains($tailAnchor)) {
-    throw 'Could not find smoke-test tail anchor.'
+if ($src -notmatch 'ПолучитьНомерВерсии') {
+    throw 'UTF-8 Russian method names are missing from source.'
 }
-$test = $test.Replace($tailAnchor, $cancelRuntime)
+if ($src -notmatch 'case 12:') {
+    throw 'CancelPaymentByPaymentCard implementation is missing.'
+}
+
+Set-Content -Path $sourceOut -Value $src -Encoding UTF8
 Set-Content -Path $testOut -Value $test -Encoding UTF8
 
 Write-Host "Prepared $sourceOut"
