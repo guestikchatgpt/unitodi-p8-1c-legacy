@@ -1,6 +1,10 @@
 using System;
 using System.Globalization;
+using System.IO;
 using System.Reflection;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 [assembly: ComVisible(true)]
@@ -56,6 +60,7 @@ namespace UnitodiP8Legacy
         private bool printSlipOnTerminal = true;
         private int lastErrorCode = 0;
         private string lastErrorDescription = "OK";
+        private static readonly object FileLock = new object();
 
         private static readonly string[] MethodEn =
         {
@@ -135,15 +140,18 @@ namespace UnitodiP8Legacy
         {
             try
             {
+                if (methodNum == 10 || methodNum == 11 || methodNum == 12)
+                    TraceCall(methodNum, p);
+
                 switch (methodNum)
                 {
                     case 0:
-                        retValue = "0.5.1-payment-return-test";
+                        retValue = "0.5.4-rrn-journal-test";
                         return;
                     case 1:
                         EnsureLength(p, 7);
                         p[0] = "Unitodi P8 Bio via PBF/POSConnector";
-                        p[1] = "Legacy BPO 2.x driver. Device test, payment and return are enabled. PBF host success codes 0 and 00 are accepted.";
+                        p[1] = "Legacy BPO 2.x driver. Device test, payment, return and cancellation are enabled. Sale RRN is extracted from the PBF slip when needed and journaled locally for safe return fallback.";
                         p[2] = "ЭквайринговыйТерминал";
                         p[3] = 2002;
                         p[4] = true;
@@ -196,11 +204,14 @@ namespace UnitodiP8Legacy
                     case 11:
                         retValue = CardOperation(29, p, true);
                         return;
+                    case 12:
+                        retValue = CardOperation(29, p, true);
+                        return;
                     case 18:
                         retValue = printSlipOnTerminal;
                         return;
                     default:
-                        SetError(12000, "This monetary operation is not enabled in build 0.5.1-payment-return-test.");
+                        SetError(12000, "This monetary operation is not enabled in build 0.5.4-rrn-journal-test.");
                         retValue = false;
                         return;
                 }
@@ -322,11 +333,29 @@ namespace UnitodiP8Legacy
                 return false;
             }
 
+            string receiptNumber = ToText(p[3]).Trim();
+            string cardHint = NormalizePan(ToText(p[1]));
             string originalRrn = requireOriginalRrn ? ToText(p[4]).Trim() : "";
+
             if (requireOriginalRrn && originalRrn.Length == 0)
             {
-                SetError(10012, "Return requires the RRN of the original payment.");
+                originalRrn = FindRecordedSaleRrn(receiptNumber, amountKopecks, cardHint);
+                if (originalRrn.Length > 0)
+                {
+                    p[4] = originalRrn;
+                    Trace("RRN fallback matched local sale journal: receipt=" + SafeLog(receiptNumber) +
+                          "; amount=" + amountKopecks.ToString(CultureInfo.InvariantCulture) +
+                          "; rrn=" + SafeLog(originalRrn));
+                }
+            }
+
+            if (requireOriginalRrn && originalRrn.Length == 0)
+            {
+                SetError(10012, "1C did not provide the original RRN and no unique matching sale was found in the local journal. Open the return from the original sales receipt.");
                 p[6] = lastErrorDescription;
+                Trace("RETURN BLOCKED: missing original RRN; receipt=" + SafeLog(receiptNumber) +
+                      "; amount=" + amountKopecks.ToString(CultureInfo.InvariantCulture) +
+                      "; card=" + SafeLog(cardHint));
                 return false;
             }
 
@@ -335,6 +364,8 @@ namespace UnitodiP8Legacy
             if (!ok)
             {
                 p[6] = result.Slip.Length > 0 ? result.Slip : lastErrorDescription;
+                Trace("CARD FAIL op=" + operationCode.ToString(CultureInfo.InvariantCulture) +
+                      "; error=" + SafeLog(lastErrorDescription));
                 return false;
             }
 
@@ -342,6 +373,26 @@ namespace UnitodiP8Legacy
             if (result.Rrn.Length > 0) p[4] = result.Rrn;
             if (result.AuthorizationCode.Length > 0) p[5] = result.AuthorizationCode;
             p[6] = result.Slip.Length > 0 ? result.Slip : result.Message;
+
+            if (operationCode == 1)
+            {
+                AppendJournal("SALE", receiptNumber, amountKopecks, result.Rrn,
+                              result.AuthorizationCode, result.Pan, "");
+            }
+            else if (operationCode == 29)
+            {
+                AppendJournal("RETURN", receiptNumber, amountKopecks, result.Rrn,
+                              result.AuthorizationCode, result.Pan, originalRrn);
+            }
+
+            Trace("CARD OK op=" + operationCode.ToString(CultureInfo.InvariantCulture) +
+                  "; receipt=" + SafeLog(receiptNumber) +
+                  "; amount=" + amountKopecks.ToString(CultureInfo.InvariantCulture) +
+                  "; rrn=" + SafeLog(result.Rrn) +
+                  "; refRaw=" + SafeLog(result.ReferenceNumberRaw) +
+                  "; auth=" + SafeLog(result.AuthorizationCode) +
+                  "; card=" + SafeLog(NormalizePan(result.Pan)));
+
             SetOk();
             return true;
         }
@@ -394,12 +445,17 @@ namespace UnitodiP8Legacy
                 result.Status = SafeGetInt(rsp, "Status");
                 result.ResponseCode = SafeGetString(rsp, "ResponseCodeHost").Trim();
                 result.Message = SafeGetString(rsp, "TextResponse");
-                result.Rrn = SafeGetString(rsp, "ReferenceNumber");
+                result.ReferenceNumberRaw = SafeGetString(rsp, "ReferenceNumber").Trim();
+                result.Rrn = result.ReferenceNumberRaw;
                 result.AuthorizationCode = SafeGetString(rsp, "AuthorizationCode");
                 result.Pan = SafeGetString(rsp, "PAN");
                 result.Slip = SafeGetString(rsp, "ReceiptData");
                 result.OperationResult = SafeGetString(rsp, "OperationResult");
                 if (result.Slip.Length == 0) result.Slip = result.Message;
+
+                string slipRrn = ExtractRrnFromSlip(result.Slip);
+                if (slipRrn.Length > 0)
+                    result.Rrn = slipRrn;
 
                 int connectorErrorCode = SafeGetInt(pc, "ErrorCode");
                 string connectorError = SafeGetString(pc, "ErrorDescription");
@@ -438,6 +494,175 @@ namespace UnitodiP8Legacy
                 ReleaseCom(rsp);
                 ReleaseCom(req);
                 ReleaseCom(pc);
+            }
+        }
+
+        private static string ExtractRrnFromSlip(string slip)
+        {
+            if (String.IsNullOrWhiteSpace(slip)) return "";
+            try
+            {
+                Match m = Regex.Match(slip, @"(?im)\bRRN\b\s*[:#№\-]?\s*([0-9]{6,20})");
+                if (m.Success) return m.Groups[1].Value.Trim();
+            }
+            catch { }
+            return "";
+        }
+
+        private static string GetDataDir()
+        {
+            string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (String.IsNullOrWhiteSpace(root))
+                root = Path.GetTempPath();
+            return Path.Combine(root, "UnitodiP8Legacy");
+        }
+
+        private static string GetJournalPath()
+        {
+            return Path.Combine(GetDataDir(), "transactions.tsv");
+        }
+
+        private static string GetTracePath()
+        {
+            return Path.Combine(GetDataDir(), "driver.log");
+        }
+
+        private static void EnsureDataDir()
+        {
+            Directory.CreateDirectory(GetDataDir());
+        }
+
+        private static string SafeLog(string value)
+        {
+            if (value == null) return "";
+            return value.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Replace("|", "/");
+        }
+
+        private static string NormalizePan(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return "";
+            string s = value.Trim();
+            string digits = Regex.Replace(s, @"\D", "");
+            if (s.IndexOf('*') >= 0) return SafeLog(s);
+            if (digits.Length >= 4) return "****" + digits.Substring(digits.Length - 4);
+            return SafeLog(s);
+        }
+
+        private static void Trace(string message)
+        {
+            try
+            {
+                lock (FileLock)
+                {
+                    EnsureDataDir();
+                    File.AppendAllText(GetTracePath(),
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) +
+                        "\t" + SafeLog(message) + Environment.NewLine,
+                        Encoding.UTF8);
+                }
+            }
+            catch { }
+        }
+
+        private static void TraceCall(int methodNum, object[] p)
+        {
+            try
+            {
+                string[] a = new string[7];
+                for (int i = 0; i < a.Length; i++)
+                    a[i] = p != null && p.Length > i ? SafeLog(ToText(p[i])) : "<missing>";
+                a[1] = NormalizePan(a[1]);
+                Trace("CALL method=" + methodNum.ToString(CultureInfo.InvariantCulture) +
+                      "; p0=" + a[0] +
+                      "; p1=" + a[1] +
+                      "; p2=" + a[2] +
+                      "; p3=" + a[3] +
+                      "; p4=" + a[4] +
+                      "; p5=" + a[5] +
+                      "; p6=" + a[6]);
+            }
+            catch { }
+        }
+
+        private static void AppendJournal(string type, string receipt, long amountKopecks,
+                                          string rrn, string auth, string pan, string originalRrn)
+        {
+            try
+            {
+                string line = String.Join("\t", new string[]
+                {
+                    DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture),
+                    SafeLog(type),
+                    SafeLog(receipt),
+                    amountKopecks.ToString(CultureInfo.InvariantCulture),
+                    SafeLog(rrn),
+                    SafeLog(auth),
+                    SafeLog(NormalizePan(pan)),
+                    SafeLog(originalRrn)
+                }) + Environment.NewLine;
+
+                lock (FileLock)
+                {
+                    EnsureDataDir();
+                    File.AppendAllText(GetJournalPath(), line, Encoding.UTF8);
+                }
+            }
+            catch { }
+        }
+
+        private static string FindRecordedSaleRrn(string receipt, long amountKopecks, string cardHint)
+        {
+            try
+            {
+                string path = GetJournalPath();
+                if (!File.Exists(path)) return "";
+
+                string[] lines;
+                lock (FileLock)
+                    lines = File.ReadAllLines(path, Encoding.UTF8);
+
+                HashSet<string> returned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string[] f = lines[i].Split('\t');
+                    if (f.Length >= 8 && String.Equals(f[1], "RETURN", StringComparison.OrdinalIgnoreCase) &&
+                        !String.IsNullOrWhiteSpace(f[7]))
+                        returned.Add(f[7].Trim());
+                }
+
+                List<string> matches = new List<string>();
+                string normalizedHint = NormalizePan(cardHint);
+                for (int i = lines.Length - 1; i >= 0; i--)
+                {
+                    string[] f = lines[i].Split('\t');
+                    if (f.Length < 8 || !String.Equals(f[1], "SALE", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    long savedAmount;
+                    if (!Int64.TryParse(f[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out savedAmount) ||
+                        savedAmount != amountKopecks)
+                        continue;
+
+                    string savedRrn = f[4].Trim();
+                    if (savedRrn.Length == 0 || returned.Contains(savedRrn))
+                        continue;
+
+                    bool receiptMatch = receipt.Length > 0 && String.Equals(f[2].Trim(), receipt, StringComparison.OrdinalIgnoreCase);
+                    bool cardMatch = normalizedHint.Length > 0 &&
+                                     String.Equals(NormalizePan(f[6]), normalizedHint, StringComparison.OrdinalIgnoreCase);
+
+                    if (receiptMatch || cardMatch)
+                    {
+                        if (!matches.Contains(savedRrn))
+                            matches.Add(savedRrn);
+                    }
+                }
+
+                return matches.Count == 1 ? matches[0] : "";
+            }
+            catch
+            {
+                return "";
             }
         }
 
@@ -526,6 +751,7 @@ namespace UnitodiP8Legacy
             public string ResponseCode = "";
             public string Message = "";
             public string Rrn = "";
+            public string ReferenceNumberRaw = "";
             public string AuthorizationCode = "";
             public string Pan = "";
             public string Slip = "";
