@@ -1,49 +1,95 @@
 # Unitodi P8 Bio -> 1C Retail 2.2 legacy driver
 
 Experimental x86 COM integration layer for old 1C Peripheral Equipment Library (BPO) 2.x.
-It bridges the legacy 1C acquiring-terminal API to the already installed PBF `POSConnector` COM API.
+It bridges the legacy 1C acquiring-terminal API to an installed PBF POSConnector COM API.
 
-## Target environment
-
-Verified base environment before this driver is introduced:
+## Verified target environment
 
 - 1C platform: 8.3.13.1690 x86, thin client.
 - 1C Retail: 2.2.8.27.
 - BPO: 2.0.5.23 generation.
-- Unitodi P8 Bio: USB virtual serial port.
-- PbfProxy: service running, TCP `127.0.0.1:40101`.
-- POSConnector x86 COM: version 0.1.11.0.
-- Terminal ID is configured locally and is not stored in this repository.
+- Unitodi P8 Bio through PbfProxy.
+- PbfProxy TCP endpoint: 127.0.0.1:40101.
+- POSConnector x86 COM tested with version 0.1.11.0.
+- Terminal ID is configured locally and is never stored in this public repository.
 
-Safe PBF operation `26` (`TestConnection`) was verified end-to-end with:
-
-- `Exchange rc = 0`
-- `Status = 1`
-- `ResponseCodeHost = 00`
-- successful terminal response.
-
-## Architecture
+Architecture:
 
 ```text
 1cv8c.exe x86
     -> AddIn.UnitodiP8Legacy
     -> POSConnector.dll x86 (COM)
-    -> PbfProxy 127.0.0.1:40101
-    -> USB virtual COM port
+    -> PbfProxy
     -> Unitodi P8 Bio
 ```
 
-The repository does **not** redistribute PBF/POSConnector binaries. They must already be installed and configured.
+The repository does not redistribute PBF/POSConnector binaries.
 
-## Current safety stage
+## v0.6.0 production-core scope
 
-The current public build is intentionally limited to component loading, parameter configuration, opening/closing the driver and **Device Test**. Payment, return, cancellation, preauthorization and settlement entry points are exposed for compatibility discovery but return an explicit "disabled in test build" error.
+Implemented and field-tested integration paths:
 
-This is deliberate: no real payment is enabled until the exact BPO 2.0.5.23 call contract is observed on the target 1C configuration.
+| 1C operation | PBF OperationCode | State |
+|---|---:|---|
+| Device test | 26 | enabled |
+| Payment | 1 | enabled |
+| Return | 29 | enabled |
+| Cancel payment | 4 when exact RRN+TrxID is journaled; otherwise 29 refund | enabled |
+| Emergency reversal | 4 against the exact recent in-process sale only | enabled with hard safety guard |
+| Settlement | 59 | enabled |
+| Print approved bank slip | ReceiptData -> 1C fiscal printer | enabled |
+
+Not enabled in this driver:
+
+- preauthorization 15/16/17;
+- unconditional last-operation reversal 53;
+- SBP-specific operations 30/31/32/33.
+
+Biometric/SBP behavior inside universal PBF payment operation 1 depends on terminal/PBF/acquirer software and is outside the legacy 1C method contract.
+
+## Bank-slip printing
+
+In integrated PBF mode the driver returns the PBF ReceiptData text to 1C and reports
+PrintSlipOnTerminal = false. This makes old BPO print the approved bank slip through the
+cash-register/fiscal-printer path instead of assuming that P8 printed it itself.
+
+The legacy PrintSlipOnTerminal parameter is still accepted for compatibility with already
+stored 1C settings, but the effective value is always false.
+
+## Transaction safety
+
+Successful sales are journaled locally in:
+
+```text
+%LOCALAPPDATA%\UnitodiP8Legacy\transactions.tsv
+```
+
+Diagnostic calls/results are written to:
+
+```text
+%LOCALAPPDATA%\UnitodiP8Legacy\driver.log
+```
+
+The journal stores RRN and PBF TrxID for new transactions.
+
+CancelPaymentByPaymentCard uses real PBF Void operation 4 only when the exact original RRN
+has a stored TrxID. If no TrxID is available, the driver uses the already verified addressable
+refund operation 29. If an op=4 request was actually sent and then fails or times out, the
+driver does not automatically issue a refund, avoiding a possible double reversal.
+
+EmergencyReversal never calls unsafe VoidLastOperation/op=53. It is accepted only for an
+exact sale completed by the same COM driver instance within five minutes and only when both
+RRN and TrxID are known; otherwise it fails closed.
+
+## Host response codes
+
+PBF/host success codes observed in production include 0, 00 and 000. The driver accepts an
+empty host response or a response consisting only of zeroes. Mixed/non-zero codes remain
+errors.
 
 ## CI build
 
-GitHub Actions builds with the 32-bit .NET Framework compiler:
+GitHub Actions builds with 32-bit .NET Framework csc:
 
 ```text
 C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe
@@ -51,61 +97,27 @@ C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe
 /codepage:65001
 ```
 
-Every push to `main`, every PR, and manual `workflow_dispatch` produces the artifact:
+Every feature/fix push produces the UnitodiP8Legacy-x86 artifact and runs smoke tests plus
+32-bit COM registration metadata validation.
 
-`UnitodiP8Legacy-x86.zip`
-
-The job also runs source-level smoke tests and validates `RegAsm` COM registration metadata.
-
-## Install on the cashier workstation
+## Installation
 
 Do not compile on the cashier workstation.
 
-Download the latest Actions artifact, unpack it, then run an elevated PowerShell:
+With all 1C processes closed, unpack the Actions artifact and run elevated PowerShell:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer only copies/registers `UnitodiP8LegacyDriver.dll`. It does not modify PbfProxy or the existing POSConnector installation.
+The installer only replaces/registers AddIn.UnitodiP8Legacy. It does not change PbfProxy,
+POSConnector or serial-port configuration.
 
-Prerequisites checked by the installer:
+Local equipment parameters:
 
-- 32-bit POSConnector COM registration exists.
-- `HKLM\SOFTWARE\PBF\POSConnector\InstallDir` exists in the 32-bit registry view.
-- `client.ini` exists in that directory.
-
-## First 1C test
-
-Create the driver as a preinstalled local COM component:
-
-- Equipment type: `Эквайринговый терминал`
-- Name: `Unitodi P8 Bio (PBF legacy test)`
-- Object identifier / ProgID: `AddIn.UnitodiP8Legacy`
-
-Initial parameters:
-
-- `TerminalID = <your terminal ID>`
-- `TimeoutMs = 180000`
-- `PrintSlipOnTerminal = true`
-
-The first test in 1C must be **Device Test only**. It maps to PBF operation `26` and does not perform a payment.
-
-## Planned PBF operation mapping
-
-| 1C operation | PBF OperationCode |
-|---|---:|
-| Device test | 26 |
-| Payment | 1 |
-| Return | 29 |
-| Cancel payment | 4 |
-| Preauthorization | 15 |
-| Preauthorization completion | 16 |
-| Preauthorization cancellation | 17 |
-| Emergency reversal | 53 |
-| Settlement | 59 |
-
-Only Device Test is enabled in the current test build.
+- TerminalID = merchant terminal ID;
+- TimeoutMs = 180000;
+- PrintSlipOnTerminal is accepted for compatibility but forced off by v0.6.0.
 
 ## Uninstall
 
@@ -113,4 +125,4 @@ Only Device Test is enabled in the current test build.
 powershell.exe -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
 
-This unregisters only `AddIn.UnitodiP8Legacy` and leaves PBF/POSConnector unchanged.
+This unregisters only AddIn.UnitodiP8Legacy and leaves the PBF stack untouched.
