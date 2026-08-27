@@ -41,10 +41,17 @@ internal static class SmokeTest
         d.GetNParams(method, ref paramCount);
         if (paramCount != 7) return Fail("cancel parameter count");
 
+        method = -1;
+        d.FindMethod("ИтогиДняПоКартам", ref method);
+        if (method != 17) return Fail("settlement lookup");
+        paramCount = 0;
+        d.GetNParams(method, ref paramCount);
+        if (paramCount != 2) return Fail("settlement parameter count");
+
         object[] versionArgs = new object[0];
         object version = null;
         d.CallAsFunc(0, ref version, ref versionArgs);
-        if (!object.Equals(version, "0.5.4-rrn-journal-test")) return Fail("version");
+        if (!object.Equals(version, "0.5.5-settlement-test")) return Fail("version");
 
         object[] desc = new object[7];
         object result = null;
@@ -52,8 +59,8 @@ internal static class SmokeTest
         if (!(result is bool) || !(bool)result) return Fail("GetDescription result");
         if (!object.Equals(desc[2], "ЭквайринговыйТерминал")) return Fail("equipment type");
         if (!object.Equals(desc[3], 2002)) return Fail("interface revision");
-        if (Convert.ToString(desc[1]).IndexOf("journaled locally", StringComparison.OrdinalIgnoreCase) < 0)
-            return Fail("description does not advertise journal fallback");
+        if (Convert.ToString(desc[1]).IndexOf("settlement are enabled", StringComparison.OrdinalIgnoreCase) < 0)
+            return Fail("description does not advertise settlement");
 
         MethodInfo hostSuccess = typeof(Driver).GetMethod("IsHostSuccess", BindingFlags.NonPublic | BindingFlags.Static);
         if (hostSuccess == null) return Fail("IsHostSuccess missing");
@@ -86,6 +93,12 @@ internal static class SmokeTest
         d.CallAsFunc(12, ref result, ref cancel);
         if (!(result is bool) || (bool)result) return Fail("cancel validation result");
         if (GetLastErrorCode(d) == 12000) return Fail("cancel still disabled");
+
+        object[] settlement = { "device", "" };
+        result = null;
+        d.CallAsFunc(17, ref result, ref settlement);
+        if (!(result is bool) || (bool)result) return Fail("settlement validation result");
+        if (GetLastErrorCode(d) == 12000) return Fail("settlement still disabled");
 
         Console.WriteLine("Smoke tests passed.");
         return 0;
